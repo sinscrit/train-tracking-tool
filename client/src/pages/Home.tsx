@@ -889,7 +889,9 @@ export default function Home() {
       actualServices = [...actualServices, ...scheduledServices];
       
       // Separate bonus trains from actual services
-      // Bonus trains are trains on days that are NOT in the régime
+      // Bonus trains are trains that:
+      // 1. Fall on a day NOT in the régime, OR
+      // 2. Fall on a day in the régime but train number is NOT in that day's régime list
       const bonusTrains: TrainService[] = [];
       const regimeDays = Object.keys(regime) as Array<keyof typeof regime>;
       
@@ -899,9 +901,9 @@ export default function Home() {
         const serviceDate = new Date(service.date);
         const dayOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][serviceDate.getDay()] as keyof typeof regime;
         
-        // If this day is NOT in the régime, it's a bonus train
+        // Check if this day is NOT in the régime
         if (!regimeDays.includes(dayOfWeek)) {
-          // Change service_id prefix from 'actual-' to 'bonus-'
+          // Day mismatch - it's a bonus train
           const bonusService = {
             ...service,
             service_id: service.service_id.replace(/^actual-/, 'bonus-')
@@ -910,7 +912,22 @@ export default function Home() {
           return false; // Remove from actual_services
         }
         
-        return true; // Keep in actual_services
+        // Day is in régime, check if train number is in that day's régime list
+        const regimeTrainsForDay = regime[dayOfWeek] || [];
+        const trainNumber = service.train_info.train_number;
+        const trainInRegime = regimeTrainsForDay.some(rs => rs.train_info.train_number === trainNumber);
+        
+        if (!trainInRegime) {
+          // Train number mismatch - it's a bonus train
+          const bonusService = {
+            ...service,
+            service_id: service.service_id.replace(/^actual-/, 'bonus-')
+          };
+          bonusTrains.push(bonusService);
+          return false; // Remove from actual_services
+        }
+        
+        return true; // Keep in actual_services (day matches AND train number matches)
       });
       
       // Step 5: Create or update period
@@ -965,11 +982,33 @@ export default function Home() {
   };
 
   const handleServiceUpdate = (updatedService: TrainService) => {
-    setServices(prev => ({
-      ...prev,
-      actual: prev.actual.map(s => 
-        s.service_id === updatedService.service_id ? updatedService : s
-      )
+    // Update the service in the correct period's actual_services or bonus_trains array
+    setPeriods(prevPeriods => prevPeriods.map(period => {
+      if (period.id !== selectedPeriodId) return period;
+      
+      // Check if it's in actual_services
+      const inActualServices = period.actual_services.some(s => s.service_id === updatedService.service_id);
+      if (inActualServices) {
+        return {
+          ...period,
+          actual_services: period.actual_services.map(s => 
+            s.service_id === updatedService.service_id ? updatedService : s
+          )
+        };
+      }
+      
+      // Check if it's in bonus_trains
+      const inBonusTrains = period.bonus_trains.some(s => s.service_id === updatedService.service_id);
+      if (inBonusTrains) {
+        return {
+          ...period,
+          bonus_trains: period.bonus_trains.map(s => 
+            s.service_id === updatedService.service_id ? updatedService : s
+          )
+        };
+      }
+      
+      return period;
     }));
   };
 
