@@ -1,0 +1,26 @@
+# Development files
+node_modules
+.git
+.gitignore
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Development tools
+.vscode
+.idea
+*.log
+.DS_Store
+
+# Test files
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+
+# Screenshots and temporary files
+screenshots/
+*.tmp
+*.temp

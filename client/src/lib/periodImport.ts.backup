@@ -1,0 +1,503 @@
+import type { TrainService, StationTime } from "@/data/trainData";
+
+type DayOfWeek = 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday';
+
+type Regime = {
+  monday?: TrainService[];
+  tuesday?: TrainService[];
+  wednesday?: TrainService[];
+  thursday?: TrainService[];
+  friday?: TrainService[];
+  saturday?: TrainService[];
+  sunday?: TrainService[];
+};
+
+interface ParsedRow {
+  date: string;
+  trainId: string;
+  times: string[];
+  dayOfWeek: DayOfWeek;
+}
+
+/**
+ * Parse CSV data into structured rows
+ * Supports two formats:
+ * 1. Day-first format: Day, Train, Times... (real-world format)
+ * 2. Date-first format: Date, Train, Times... (original format)
+ */
+export function parseCSV(csvInput: string): ParsedRow[] {
+  const lines = csvInput.trim().split('\n').filter(line => line.trim());
+  
+  if (lines.length === 0) {
+    throw new Error("Please paste CSV data");
+  }
+  
+  // French to English day mapping
+  const dayMap: Record<string, DayOfWeek> = {
+    'lundi': 'monday',
+    'mardi': 'tuesday',
+    'mercredi': 'wednesday',
+    'jeudi': 'thursday',
+    'vendredi': 'friday',
+    'samedi': 'saturday',
+    'dimanche': 'sunday',
+    'monday': 'monday',
+    'tuesday': 'tuesday',
+    'wednesday': 'wednesday',
+    'thursday': 'thursday',
+    'friday': 'friday',
+    'saturday': 'saturday',
+    'sunday': 'sunday',
+  };
+  
+  // Find first valid day line (first column contains a day of week or a date)
+  let startIndex = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const separator = lines[i].includes('\t') ? '\t' : lines[i].includes(';') ? ';' : ',';
+    const columns = lines[i].split(separator).map(col => col.trim());
+    const firstCol = columns[0]?.toLowerCase();
+    
+    // Check if first column is a day name or a date
+    if (dayMap[firstCol] || firstCol?.match(/^\d{4}-\d{2}-\d{2}$/)) {
+      startIndex = i;
+      break;
+    }
+  }
+  
+  if (startIndex >= lines.length) {
+    throw new Error("No valid data rows found. First column must contain a day of week or date.");
+  }
+  
+  const dataLines = lines.slice(startIndex);
+  const parsed: ParsedRow[] = [];
+  let currentDay: DayOfWeek | null = null;
+  let currentDate: string | null = null;
+  
+  for (const line of dataLines) {
+    const separator = line.includes('\t') ? '\t' : line.includes(';') ? ';' : ',';
+    const columns = line.split(separator).map(col => col.trim());
+    
+    if (columns.length < 13) {
+      // Skip lines with too few columns (might be empty or incomplete)
+      continue;
+    }
+    
+    const firstCol = columns[0]?.toLowerCase();
+    let dateStr: string;
+    let trainId: string;
+    let times: string[];
+    let dayOfWeek: DayOfWeek;
+    
+    // Check if first column is a day name
+    if (dayMap[firstCol]) {
+      // Day-first format: Day, Train, Times...
+      currentDay = dayMap[firstCol];
+      currentDate = null; // Reset current date when we see a day
+      trainId = columns[1];
+      times = columns.slice(2, 14); // 12 time columns
+      dayOfWeek = currentDay;
+      
+      // For régime rows (day without date), we need to generate a placeholder date
+      // We'll use a reference date for each day of the week
+      const referenceDates: Record<DayOfWeek, string> = {
+        'monday': '2025-01-06',
+        'tuesday': '2025-01-07',
+        'wednesday': '2025-01-08',
+        'thursday': '2025-01-09',
+        'friday': '2025-01-10',
+        'saturday': '2025-01-11',
+        'sunday': '2025-01-12',
+      };
+      dateStr = referenceDates[currentDay];
+      
+    } else if (firstCol?.match(/^\d{4}-\d{2}-\d{2}$/)) {
+      // Date-first format: Date, Train, Times...
+      currentDate = columns[0];
+      trainId = columns[1];
+      times = columns.slice(2, 14); // 12 time columns
+      dateStr = currentDate;
+      
+      // Calculate day of week from date
+      const date = new Date(dateStr);
+      if (isNaN(date.getTime())) {
+        throw new Error(`Invalid date format: ${dateStr}. Use YYYY-MM-DD`);
+      }
+      const dayNames: DayOfWeek[] = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+      dayOfWeek = dayNames[date.getDay()];
+      
+    } else if (firstCol === '' || !firstCol) {
+      // Grouped format: empty first column means inherit current day or date
+      if (currentDate) {
+        // We're in a date group
+        dateStr = currentDate;
+        trainId = columns[1];
+        times = columns.slice(2, 14);
+        
+        const date = new Date(dateStr);
+        const dayNames: DayOfWeek[] = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+        dayOfWeek = dayNames[date.getDay()];
+        
+      } else if (currentDay) {
+        // We're in a day group (régime)
+        trainId = columns[1];
+        times = columns.slice(2, 14);
+        dayOfWeek = currentDay;
+        
+        const referenceDates: Record<DayOfWeek, string> = {
+          'monday': '2025-01-06',
+          'tuesday': '2025-01-07',
+          'wednesday': '2025-01-08',
+          'thursday': '2025-01-09',
+          'friday': '2025-01-10',
+          'saturday': '2025-01-11',
+          'sunday': '2025-01-12',
+        };
+        dateStr = referenceDates[currentDay];
+        
+      } else {
+        throw new Error('First row must contain a day of week or date');
+      }
+      
+    } else {
+      // Unknown format - skip this line
+      continue;
+    }
+    
+    // Validate train ID
+    if (!trainId || trainId.trim() === '') {
+      continue; // Skip rows without train ID
+    }
+    
+    parsed.push({
+      date: dateStr,
+      trainId,
+      times,
+      dayOfWeek,
+    });
+  }
+  
+  if (parsed.length === 0) {
+    throw new Error("No valid train data found in CSV");
+  }
+  
+  return parsed;
+}
+
+/**
+ * Extract régime schedules from parsed rows
+ * Groups trains by day of week and creates template schedules
+ */
+export function extractRegimeSchedules(parsedRows: ParsedRow[]): Regime {
+  const regimeByDay: Record<string, Map<string, ParsedRow>> = {};
+  
+  // Group by day and train number
+  // Only include rows that use reference dates (régime rows)
+  const referenceDates = ['2025-01-06', '2025-01-07', '2025-01-08', '2025-01-09', '2025-01-10', '2025-01-11', '2025-01-12'];
+  
+  for (const row of parsedRows) {
+    // Only include in régime if it's a reference date (from day-first format)
+    if (referenceDates.includes(row.date)) {
+      if (!regimeByDay[row.dayOfWeek]) {
+        regimeByDay[row.dayOfWeek] = new Map();
+      }
+      
+      // Keep first occurrence of each train for this day
+      if (!regimeByDay[row.dayOfWeek].has(row.trainId)) {
+        regimeByDay[row.dayOfWeek].set(row.trainId, row);
+      }
+    }
+  }
+  
+  // Convert to Regime structure
+  const regime: Regime = {};
+  
+  for (const [day, trainMap] of Object.entries(regimeByDay)) {
+    const trains: TrainService[] = [];
+    
+    for (const [trainId, row] of Array.from(trainMap.entries())) {
+      const parseTime = (t: string): StationTime | undefined => {
+        if (t === "-" || t === "" || !t) return undefined;
+        return { time: t, changed: false };
+      };
+      
+      const service: TrainService = {
+        service_id: `regime-${day}-${trainId}`,
+        date: row.date,
+        train_info: {
+          train_number: trainId,
+          description: `Train ${trainId}`,
+          crew: { driver: "Blue", train_manager: "Red" },
+        },
+        systems_data: {
+          totem_plus: {
+            status: "Automatically_Created",
+            visible: true,
+            schedule: {
+          outbound: {
+            pno_dep: parseTime(row.times[0]),
+            wnh_arr: parseTime(row.times[1]),
+            bru_arr: parseTime(row.times[2]),
+            bru_dep: parseTime(row.times[3]),
+            hdk_arr: parseTime(row.times[4]),
+            ams_arr: parseTime(row.times[5]),
+          },
+          return: {
+            ams_dep: parseTime(row.times[6]),
+            hdk_arr: parseTime(row.times[7]),
+            bru_arr: parseTime(row.times[8]),
+            bru_dep: parseTime(row.times[9]),
+            wnh_arr: parseTime(row.times[10]),
+            pno_arr: parseTime(row.times[11]),
+          },
+        },
+      },
+      tam_tam: {
+        status: "Automatically_Created",
+        visible: true,
+        schedule: {
+            outbound: {
+              PNO_dep: parseTime(row.times[0]),
+              WNH_arr: parseTime(row.times[1]),
+              BRU_arr: parseTime(row.times[2]),
+              BRU_dep: parseTime(row.times[3]),
+              HDK_arr: parseTime(row.times[4]),
+              AMS_arr: parseTime(row.times[5]),
+            },
+            return: {
+              AMS_dep: parseTime(row.times[6]),
+              HDK_arr: parseTime(row.times[7]),
+              BRU_arr: parseTime(row.times[8]),
+              BRU_dep: parseTime(row.times[9]),
+              WNH_arr: parseTime(row.times[10]),
+              PNO_arr: parseTime(row.times[11]),
+            },
+          },
+        },
+        tam_tam: {
+          status: "Automatically_Created",
+          schedule: {
+            outbound: {
+              PNO_dep: parseTime(row.times[0]),
+              WNH_arr: parseTime(row.times[1]),
+              BRU_arr: parseTime(row.times[2]),
+              BRU_dep: parseTime(row.times[3]),
+              HDK_arr: parseTime(row.times[4]),
+              AMS_arr: parseTime(row.times[5]),
+            },
+            return: {
+              AMS_dep: parseTime(row.times[6]),
+              HDK_arr: parseTime(row.times[7]),
+              BRU_arr: parseTime(row.times[8]),
+              BRU_dep: parseTime(row.times[9]),
+              WNH_arr: parseTime(row.times[10]),
+              PNO_arr: parseTime(row.times[11]),
+            },
+          },
+        },
+        e_roster: {
+          status: "Automatically_Created",
+          schedule: {
+            outbound: {
+              PNO_dep: parseTime(row.times[0]),
+              WNH_arr: parseTime(row.times[1]),
+              BRU_arr: parseTime(row.times[2]),
+              BRU_dep: parseTime(row.times[3]),
+              HDK_arr: parseTime(row.times[4]),
+              AMS_arr: parseTime(row.times[5]),
+            },
+            return: {
+              AMS_dep: parseTime(row.times[6]),
+              HDK_arr: parseTime(row.times[7]),
+              BRU_arr: parseTime(row.times[8]),
+              BRU_dep: parseTime(row.times[9]),
+              WNH_arr: parseTime(row.times[10]),
+              PNO_arr: parseTime(row.times[11]),
+            },
+          },
+        },
+        verification: {
+          tam_tam_ok: true,
+          e_roster_ok: true,
+        },
+      };
+      
+      trains.push(service);
+    }
+    
+    regime[day as DayOfWeek] = trains;
+  }
+  
+  return regime;
+}
+
+/**
+ * Roll out régime schedules to all dates in the period
+ */
+export function rolloutRegimeToActualServices(
+  regime: Regime,
+  startDate: string,
+  endDate: string,
+  periodId: string
+): TrainService[] {
+  const services: TrainService[] = [];
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  
+  const dayNames: DayOfWeek[] = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  
+  // Iterate through each date in the range
+  for (let date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
+    const dayOfWeek = dayNames[date.getDay()];
+    const dateStr = date.toISOString().split('T')[0];
+    
+    // Get régime for this day
+    const regimeTrains = regime[dayOfWeek];
+    if (!regimeTrains) continue;
+    
+    // Create actual services for each train in the régime
+    for (const regimeTrain of regimeTrains) {
+      const actualService: TrainService = {
+        ...regimeTrain,
+        service_id: `actual-${regimeTrain.train_info.train_number}-${dateStr}`,
+        date: dateStr,
+      };
+      
+      services.push(actualService);
+    }
+  }
+  
+  return services;
+}
+
+/**
+ * Import scheduled trains from parsed rows (specific dated trains)
+ */
+export function importScheduledTrains(
+  parsedRows: ParsedRow[],
+  periodId: string,
+  existingServices: TrainService[]
+): { services: TrainService[], overwritten: string[] } {
+  const services: TrainService[] = [];
+  const overwritten: string[] = [];
+  
+  // Reference dates used for régime (skip these)
+  const referenceDates = ['2025-01-06', '2025-01-07', '2025-01-08', '2025-01-09', '2025-01-10', '2025-01-11', '2025-01-12'];
+  
+  for (const row of parsedRows) {
+    // Only import rows with actual dates (not reference dates)
+    if (referenceDates.includes(row.date)) continue;
+    
+    const parseTime = (t: string): StationTime | undefined => {
+      if (t === "-" || t === "" || !t) return undefined;
+      return { time: t, changed: false };
+    };
+    
+    const service: TrainService = {
+      service_id: `actual-${row.trainId}-${row.date}`,
+      date: row.date,
+      train_info: {
+        train_number: row.trainId,
+        description: `Train ${row.trainId}`,
+        crew: { driver: "Blue", train_manager: "Red" },
+      },
+      schedule: {
+        outbound: {
+          PNO_dep: parseTime(row.times[0]),
+          WNH_arr: parseTime(row.times[1]),
+          BRU_arr: parseTime(row.times[2]),
+          BRU_dep: parseTime(row.times[3]),
+          HDK_arr: parseTime(row.times[4]),
+          AMS_arr: parseTime(row.times[5]),
+        },
+        return: {
+          AMS_dep: parseTime(row.times[6]),
+          HDK_arr: parseTime(row.times[7]),
+          BRU_arr: parseTime(row.times[8]),
+          BRU_dep: parseTime(row.times[9]),
+          WNH_arr: parseTime(row.times[10]),
+          PNO_arr: parseTime(row.times[11]),
+        },
+      },
+      totem_plus: {
+        status: "Automatically_Created",
+        schedule: {
+          outbound: {
+            PNO_dep: parseTime(row.times[0]),
+            WNH_arr: parseTime(row.times[1]),
+            BRU_arr: parseTime(row.times[2]),
+            BRU_dep: parseTime(row.times[3]),
+            HDK_arr: parseTime(row.times[4]),
+            AMS_arr: parseTime(row.times[5]),
+          },
+          return: {
+            AMS_dep: parseTime(row.times[6]),
+            HDK_arr: parseTime(row.times[7]),
+            BRU_arr: parseTime(row.times[8]),
+            BRU_dep: parseTime(row.times[9]),
+            WNH_arr: parseTime(row.times[10]),
+            PNO_arr: parseTime(row.times[11]),
+          },
+        },
+      },
+      tam_tam: {
+        status: "Automatically_Created",
+        schedule: {
+          outbound: {
+            PNO_dep: parseTime(row.times[0]),
+            WNH_arr: parseTime(row.times[1]),
+            BRU_arr: parseTime(row.times[2]),
+            BRU_dep: parseTime(row.times[3]),
+            HDK_arr: parseTime(row.times[4]),
+            AMS_arr: parseTime(row.times[5]),
+          },
+          return: {
+            AMS_dep: parseTime(row.times[6]),
+            HDK_arr: parseTime(row.times[7]),
+            BRU_arr: parseTime(row.times[8]),
+            BRU_dep: parseTime(row.times[9]),
+            WNH_arr: parseTime(row.times[10]),
+            PNO_arr: parseTime(row.times[11]),
+          },
+        },
+      },
+      e_roster: {
+        status: "Automatically_Created",
+        schedule: {
+          outbound: {
+            PNO_dep: parseTime(row.times[0]),
+            WNH_arr: parseTime(row.times[1]),
+            BRU_arr: parseTime(row.times[2]),
+            BRU_dep: parseTime(row.times[3]),
+            HDK_arr: parseTime(row.times[4]),
+            AMS_arr: parseTime(row.times[5]),
+          },
+          return: {
+            AMS_dep: parseTime(row.times[6]),
+            HDK_arr: parseTime(row.times[7]),
+            BRU_arr: parseTime(row.times[8]),
+            BRU_dep: parseTime(row.times[9]),
+            WNH_arr: parseTime(row.times[10]),
+            PNO_arr: parseTime(row.times[11]),
+          },
+        },
+      },
+      verification: {
+        tam_tam_ok: true,
+        e_roster_ok: true,
+      },
+    };
+    
+    // Check if this service already exists (from rollout)
+    const existingIndex = existingServices.findIndex(
+      s => s.date === service.date && s.train_info.train_number === service.train_info.train_number
+    );
+    
+    if (existingIndex >= 0) {
+      overwritten.push(`${service.train_info.train_number} on ${service.date}`);
+    }
+    
+    services.push(service);
+  }
+  
+  return { services, overwritten };
+}
